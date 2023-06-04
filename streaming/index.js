@@ -12,6 +12,9 @@ const fs = require('fs');
 const WebSocket = require('ws');
 const { JSDOM } = require('jsdom');
 
+const inspector = require('node:inspector/promises');
+const fsPromises = require('fs/promises');
+
 const environment = process.env.NODE_ENV || 'development';
 const alwaysRequireAuth = process.env.LIMITED_FEDERATION_MODE === 'true' || process.env.WHITELIST_MODE === 'true' || process.env.AUTHORIZED_FETCH === 'true';
 
@@ -195,6 +198,7 @@ const startServer = async () => {
 
   const pgPool = new pg.Pool(pgConfigFromEnv(process.env));
   const server = http.createServer(app);
+  const inspect_session = new inspector.Session();
 
   const { redisParams, redisUrl, redisPrefix } = redisConfigFromEnv(process.env);
 
@@ -878,6 +882,33 @@ const startServer = async () => {
   app.get('/api/v1/streaming/health', (req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('OK');
+  });
+
+  app.get('/profiler/start', async (req, res) => {
+    log.verbose('Starting CPU profiler ...');
+
+    inspect_session.connect();
+    await inspect_session.post('Profiler.enable');
+    await inspect_session.post('Profiler.start');
+
+    log.verbose('CPU profiler started!');
+
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Profiler started!\n');
+  });
+
+  app.get('/profiler/stop', async (req, res) => {
+    log.verbose('Stopping CPU profiler ...');
+
+    const { profile } = await inspect_session.post('Profiler.stop');
+    await fsPromises.writeFile('./profile-' + Date.now().toString() + '.cpuprofile', JSON.stringify(profile));
+    await inspect_session.post('Profiler.disable');
+    inspect_session.disconnect();
+
+    log.verbose('CPU profiler stopped!\n');
+
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Profiler stopped!');
   });
 
   app.get('/metrics', (req, res) => server.getConnections((err, count) => {
